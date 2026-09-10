@@ -55,7 +55,7 @@ def autosize(ws, widths):
         ws.column_dimensions[get_column_letter(i)].width = w
 
 
-def build_readme(wb):
+def build_readme(wb, min_season, max_season, n_games):
     ws = wb.active
     ws.title = "README"
     ws["A1"] = "NFL Betting Model - Step 1 & 2 Workbook"
@@ -69,9 +69,9 @@ def build_readme(wb):
         "Season Summary  - season-by-season accuracy & calibration. The numbers here are LIVE FORMULAS",
         "                  (AVERAGEIFS / COUNTIF against the Games sheet), not pasted-in results - change",
         "                  or filter the Games sheet and these recompute.",
-        "Games           - one row per game, 2015-2025 (3,028 games). Raw scores/market lines/Elo output",
-        "                  are data; the vig-removal, pick-correctness, and Brier-score columns are live",
-        "                  formulas so you can see exactly how each number is derived.",
+        f"Games           - one row per game, {min_season}-{max_season} ({n_games:,} games). Raw scores/market lines/Elo",
+        "                  output are data; the vig-removal, pick-correctness, and Brier-score columns are",
+        "                  live formulas so you can see exactly how each number is derived.",
         "Team Elo Trajectory - illustrative rating history for a handful of teams (chart only, for a feel",
         "                  of how Elo moves game to game - not a new calculation).",
         "",
@@ -172,14 +172,15 @@ def build_season_summary(wb, seasons):
         ws.cell(r, 8, f"=AVERAGEIFS(Games!$Y:$Y,Games!$B:$B,A{r})")
 
     total_row = len(seasons) + 2
-    ws.cell(total_row, 1, "2015-2025")
+    lo, hi = seasons[0], seasons[-1]
+    ws.cell(total_row, 1, f"{lo}-{hi}")
     ws.cell(total_row, 2, f"=SUM(B2:B{total_row - 1})")
-    ws.cell(total_row, 3, f'=AVERAGEIFS(Games!$U:$U,Games!$B:$B,">=2015",Games!$B:$B,"<=2025")')
-    ws.cell(total_row, 4, f'=AVERAGEIFS(Games!$T:$T,Games!$B:$B,">=2015",Games!$B:$B,"<=2025")')
-    ws.cell(total_row, 5, f'=AVERAGEIFS(Games!$V:$V,Games!$B:$B,">=2015",Games!$B:$B,"<=2025")')
-    ws.cell(total_row, 6, f'=AVERAGEIFS(Games!$W:$W,Games!$B:$B,">=2015",Games!$B:$B,"<=2025")')
-    ws.cell(total_row, 7, f'=AVERAGEIFS(Games!$X:$X,Games!$B:$B,">=2015",Games!$B:$B,"<=2025")')
-    ws.cell(total_row, 8, f'=AVERAGEIFS(Games!$Y:$Y,Games!$B:$B,">=2015",Games!$B:$B,"<=2025")')
+    ws.cell(total_row, 3, f'=AVERAGEIFS(Games!$U:$U,Games!$B:$B,">={lo}",Games!$B:$B,"<={hi}")')
+    ws.cell(total_row, 4, f'=AVERAGEIFS(Games!$T:$T,Games!$B:$B,">={lo}",Games!$B:$B,"<={hi}")')
+    ws.cell(total_row, 5, f'=AVERAGEIFS(Games!$V:$V,Games!$B:$B,">={lo}",Games!$B:$B,"<={hi}")')
+    ws.cell(total_row, 6, f'=AVERAGEIFS(Games!$W:$W,Games!$B:$B,">={lo}",Games!$B:$B,"<={hi}")')
+    ws.cell(total_row, 7, f'=AVERAGEIFS(Games!$X:$X,Games!$B:$B,">={lo}",Games!$B:$B,"<={hi}")')
+    ws.cell(total_row, 8, f'=AVERAGEIFS(Games!$Y:$Y,Games!$B:$B,">={lo}",Games!$B:$B,"<={hi}")')
     for c in range(1, 9):
         ws.cell(total_row, c).font = Font(name=FONT, bold=True)
 
@@ -276,7 +277,8 @@ def build_current_week_sheet(wb, current_week_df):
 
 def build_trajectory_sheet(wb, elo_df, teams):
     ws = wb.create_sheet("Team Elo Trajectory")
-    ws["A1"] = "Illustrative Elo rating trajectory (pre-game rating), 2015-2025, selected teams"
+    lo, hi = int(elo_df["season"].min()), int(elo_df["season"].max())
+    ws["A1"] = f"Illustrative Elo rating trajectory (pre-game rating), {lo}-{hi}, selected teams"
     ws["A1"].font = Font(name=FONT, bold=True, size=12)
     ws["A2"] = "X-axis is the Nth game since 2015 for that team (not calendar-aligned across teams)."
     ws["A2"].font = NOTE_FONT
@@ -324,13 +326,21 @@ def build_trajectory_sheet(wb, elo_df, teams):
 
 def main():
     elo_df = pd.read_csv(PROCESSED / "elo_ratings.csv")
-    elo_df = elo_df[elo_df["season"].between(2015, 2025)].copy()
-    elo_df = elo_df[elo_df["elo_implied_spread"].notna()]
+    elo_df = elo_df[elo_df["elo_implied_spread"].notna()].copy()
+    # Lower bound fixed at 2015 (matches the EPA feature pipeline's coverage,
+    # for when that gets layered in later). Upper bound is NOT hardcoded -
+    # it's whatever the most recent season with a completed, scored game is,
+    # so 2026 starts appearing here on its own as soon as games are played,
+    # instead of silently staying frozen at 2025.
+    max_season = int(elo_df["season"].max())
+    elo_df = elo_df[elo_df["season"].between(2015, max_season)].copy()
+
+    seasons = sorted(int(s) for s in elo_df["season"].unique())
+    n_games = len(elo_df)
 
     wb = Workbook()
-    build_readme(wb)
-    games_ws, n_games = build_games_sheet(wb, elo_df)
-    seasons = sorted(elo_df["season"].unique())
+    build_readme(wb, seasons[0], seasons[-1], n_games)  # uses wb.active - must be created first, stays tab 1
+    games_ws, n_games_check = build_games_sheet(wb, elo_df)
     build_season_summary(wb, seasons)
 
     cw_path = PROCESSED / "current_week_predictions.csv"
